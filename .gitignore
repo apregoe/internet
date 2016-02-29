@@ -27,3 +27,9 @@
 *.out
 *.app
 *.dSYM
+
+#auto generated IDEs
+*.xml
+
+#network
+*.pcap

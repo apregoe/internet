@@ -27,6 +27,7 @@
 *.out
 *.app
 *.dSYM
+balancer
 
 #auto generated IDEs
 *.xml

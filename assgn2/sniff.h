@@ -61,5 +61,12 @@
 		u_short th_urp;		/* urgent pointer */
 };
 
+struct UDP_hdr {
+	u_short	uh_sport;		/* source port */
+	u_short	uh_dport;		/* destination port */
+	u_short	uh_ulen;		/* datagram length */
+	u_short	uh_sum;			/* datagram checksum */
+};
+
 
 #endif

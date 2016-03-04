@@ -509,21 +509,22 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
         return;
     }
 
-    std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
-    int server_position = it->second.second - 1;//-1 since it's saved as server id, not position
-    __uint16_t SPort = (ip_->ip_p == IPPROTO_UDP) ? ntohs(udp->uh_sport) : ntohs(tcp->th_sport);
-    __uint16_t DPort = (ip_->ip_p == IPPROTO_UDP) ? ntohs(udp->uh_dport) : ntohs(tcp->th_dport);
-    std::string Protocol = (ip_->ip_p == IPPROTO_UDP) ? "UDP" : "TCP";
-    printE(servers[server_position], pktIndex, pkt_idW);
-    printE(servers[server_position], timestamp_string(ts), timestampW);
-    printE(servers[server_position], inet_ntoa(ip_->ip_src), src_ipW);
-    printE(servers[server_position], inet_ntoa(ip_->ip_dst), dst_ipW);
-    printE(servers[server_position], SPort, src_portW);
-    printE(servers[server_position], DPort, dst_portW);
-    printE(servers[server_position], Protocol, protocolW);
-    printE(servers[server_position], HeadersSum, pkt_lenW);
-    servers[server_position] << std::endl;
-
+    if(balancer){
+        std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
+        int server_position = it->second.second - 1;//-1 since it's saved as server id, not position
+        __uint16_t SPort = (ip_->ip_p == IPPROTO_UDP) ? ntohs(udp->uh_sport) : ntohs(tcp->th_sport);
+        __uint16_t DPort = (ip_->ip_p == IPPROTO_UDP) ? ntohs(udp->uh_dport) : ntohs(tcp->th_dport);
+        std::string Protocol = (ip_->ip_p == IPPROTO_UDP) ? "UDP" : "TCP";
+        printE(servers[server_position], pktIndex, pkt_idW);
+        printE(servers[server_position], timestamp_string(ts), timestampW);
+        printE(servers[server_position], inet_ntoa(ip_->ip_src), src_ipW);
+        printE(servers[server_position], inet_ntoa(ip_->ip_dst), dst_ipW);
+        printE(servers[server_position], SPort, src_portW);
+        printE(servers[server_position], DPort, dst_portW);
+        printE(servers[server_position], Protocol, protocolW);
+        printE(servers[server_position], HeadersSum, pkt_lenW);
+        servers[server_position] << std::endl;
+    }
 
 }
 

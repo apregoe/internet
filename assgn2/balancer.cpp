@@ -7,9 +7,8 @@
 
 #include <string>
 
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
+#include <unordered_map>
 
 #include <pcap.h>
 
@@ -24,6 +23,18 @@
 #define SIZE_ETHERNET 14
 #define MAX_COLUMNS 4
 #define SEPARATOR " "
+
+
+//func signatures
+bool parseInput(int argv, char** argc);//parses input
+void printParsedResults();//prints results
+void got_packet(const pcap_pkthdr *header, const u_char *packet);
+void exit_signal(int signal);//function called when Ctr+C
+void dump_UDP_packet(const unsigned char *packet, struct timeval ts, unsigned int capture_len);
+void too_short(struct timeval ts, const char *truncated_hdr);
+const char *timestamp_string(timeval ts);
+std::string getFlowString(std::string srcIP, std::string dstIP, int srcPort, int dstPort, std::string protocol);
+template<typename T> void printE(std::ofstream & ofile, T t, const int& width);
 
 //Global variables
 /*
@@ -48,7 +59,10 @@ int num;
 bool r, i, w, p, b, c, s, d;//flags
 bool balancer, sniffer;//
 
-//database
+//logfile output
+std::ofstream ofile;
+
+/**DATABASE**/
 //table part one
 std::unordered_map<std::string, int > db_bytesCount;
 std::unordered_map<std::string, int > db_packetCount;
@@ -59,27 +73,29 @@ const std::string BYTES  = "Bytes";
 const std::string SRC    = "Source";
 const std::string DST    = "Destination";
 
+
 //table part two
-std::unordered_map<std::string, const int> db_flow;//each flow will be assing a server (randomly)
+//storing structure
+std::unordered_map<std::string, std::pair<const int, const int> > db_flow_server;//each flow will be assing a server (randomly)
 int pktIndex = 0;//packet number that is being sniffed
+int flowCount = 0;//counter for flows
+std::vector<std::pair<std::string, std::ofstream> >servers;
+std::string serverTemplate = "webserver.";
+std::vector<int> nums;
+//column width in server files and logfiles for balancer mode
+const int pkt_idW    = 12;
+const int flow_idW   = 12;
+const int server_idW = 12;
+/**END DATABASE**/
 
-
-
-
-//func signatures
-bool parseInput(int argv, char** argc);//parses input
-void printParsedResults();//prints results
-void got_packet(const pcap_pkthdr *header, const u_char *packet, int & pktIndex);
-void exit_signal(int signal);//function called when Ctr+C
-void dump_UDP_packet(const unsigned char *packet, struct timeval ts, unsigned int capture_len);
-void too_short(struct timeval ts, const char *truncated_hdr);
-const char *timestamp_string(timeval ts);
 
 int main(int argv, char** argc) {
 
     //exit signal
     signal(SIGINT, exit_signal);
+    srand(43);
 
+    //clearing default variables 
     r = i = w = p = b = c = s = d = false;
 
     if(!parseInput(argv, argc)){
@@ -89,6 +105,17 @@ int main(int argv, char** argc) {
                         "[-w num] [ -l filename ] [-c configpercent]" << std::endl;
         return 1;
     }
+
+    //opening logfile
+    ofile.open(logfile);
+
+    if(balancer){
+        printE(ofile, "pkt_id", pkt_idW);
+        printE(ofile, "flow_id", flow_idW);
+        printE(ofile, "server_id", server_idW);
+        ofile << std::endl;
+    }
+
 
     if(i == true){
 
@@ -126,7 +153,7 @@ int main(int argv, char** argc) {
         //get_packet is the call back function
         while(true){
             packet = pcap_next(handle, &header);
-            got_packet(&header, packet, pktIndex);
+            got_packet(&header, packet);
         }
 
     }else{// r == true
@@ -137,7 +164,7 @@ int main(int argv, char** argc) {
         }
 
         while((packet = pcap_next(handle, &header))){
-            got_packet(&header, packet, pktIndex);
+            got_packet(&header, packet);
         }
     }
 
@@ -147,21 +174,22 @@ int main(int argv, char** argc) {
     return 0;
 }
 
-void got_packet(const pcap_pkthdr *header, const u_char *packet, int & pktIndex){
-
+void got_packet(const pcap_pkthdr *header, const u_char *packet){
     const sniff_ethernet *ethernet; /* The ethernet header */
     const sniff_ip *ip_; /* The IP header */
     const sniff_tcp *tcp; /* The TCP header */
     const char *payload; /* Packet payload */
+    timeval ts = header->ts;/*timestamp*/
 
     u_int size_ip;
     u_int size_tcp;
+
+    int HeadersSum = 0;//ip_size + tcp/udp_size + payload;
 
     if(packet == NULL){
         std::cout << "returning" << std::endl;
         return;
     }
-    ++pktIndex;//increase packet count if it is valid
 
     //casting the packet
     ethernet = (sniff_ethernet*)packet;
@@ -172,13 +200,12 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet, int & pktIndex)
         return;
     }
 
-    if (ip_->ip_p == IPPROTO_UDP){
+    if (ip_->ip_p == IPPROTO_UDP){//UDP protocol (identifier == 17)
 
         ip *ip_udp;
         UDP_hdr *udp;
         unsigned int IP_header_length;
         int capture_len = header->caplen;
-        timeval ts = header->ts;
 
         /* For simplicity, we assume Ethernet encapsulation. */
 
@@ -202,62 +229,135 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet, int & pktIndex)
         ip_udp = (ip*) packet;
         IP_header_length = ip_udp->ip_hl * 4;   /* ip_hl is in 4-byte words */
 
-        if (capture_len < IP_header_length)
-            { /* didn't capture the full IP header including options */
+        if (capture_len < IP_header_length){ /* didn't capture the full IP header including options */
             too_short(ts, "IP header with options");
             return;
-            }
+        }
 
         /* Skip over the IP header to get to the UDP header. */
         packet += IP_header_length;
         capture_len -= IP_header_length;
 
-        if (capture_len < sizeof(UDP_hdr))
-            {
+        if (capture_len < sizeof(UDP_hdr)){
             too_short(ts, "UDP header");
             return;
-            }
+        }
+
+        //increase packet count if it is valid
+        //I do it here because it's when the pkt is 100% valid to read
+        ++pktIndex;
+
 
         udp = (UDP_hdr*) packet;
 
-        printf("%s UDP src_port=%d dst_port=%d length=%d\n",
-            timestamp_string(ts),
-            ntohs(udp->uh_sport),
-            ntohs(udp->uh_dport),
-            ntohs(udp->uh_ulen));
+        if(sniffer){//if sniffing device
+            std::string keyString;
+            if(s && d){
+                keyString = std::string(inet_ntoa(ip_->ip_src)) + SEPARATOR + std::string(inet_ntoa(ip_->ip_dst));
+            }else if(s){
+                keyString = inet_ntoa(ip_->ip_src);
+            }else{// !d
+                keyString = inet_ntoa(ip_->ip_dst);
+            }
 
+            //adding it to database/table
+            std::unordered_map<std::string, int >::iterator it;
+            it = db_packetCount.find(keyString);
 
-        std::string keyString;
-        if(s && d){
-            keyString = std::string(inet_ntoa(ip_->ip_src)) + SEPARATOR + std::string(inet_ntoa(ip_->ip_dst));
-        }else if(s){
-            keyString = inet_ntoa(ip_->ip_src);
-        }else{// !d
-            keyString = inet_ntoa(ip_->ip_dst);
+            HeadersSum =  size_ip + ntohs(udp->uh_ulen) + ntohs(ip_->ip_len) - (size_ip + ntohs(udp->uh_ulen));// + payload;
+
+            if(it == db_packetCount.end()){//new element
+                db_packetCount.insert(make_pair(keyString, 1));
+                db_bytesCount.insert(make_pair(keyString, HeadersSum));
+            }else{
+                ++it->second;
+                it = db_bytesCount.find(keyString);
+                it->second += HeadersSum;
+            }
+        }else {// if balancer device
+            std::cout << pktIndex << " ";
+            printf("UDP src_port=%d dst_port=%d\n",
+                //timestamp_string(ts),
+                ntohs(udp->uh_sport),
+                ntohs(udp->uh_dport));
+            
+            std::string currentFlowString;
+            currentFlowString =  getFlowString(inet_ntoa(ip_->ip_src), inet_ntoa(ip_->ip_dst), 
+                                                (int)ntohs(udp->uh_sport), (int)ntohs(udp->uh_dport), "UDP"); 
+
+            //std::cout << currentFlowString << std::endl;
+
+            std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
+            if(it == db_flow_server.end()){
+                //TODO: add flow to random server number with nums[i] probability
+                flowCount += 1;
+                int randNum = (rand()%100) + 1;
+                int sum = 0;//used to calculate in which server this flow will go
+                int server_id = -1;
+                for(int k = 0; k < num; ++k){
+                    sum += nums[k];
+                    #if DEBUGPROBABILITY
+                    std::cout <<"sum = " << sum << " k = " << k << " rand = " << randNum << std::endl; 
+                    #endif
+                    if(randNum <= sum){
+                        //setting server id
+                        server_id = k + 1;
+                        //adding matching flow to server k. 
+                        db_flow_server.insert( std::make_pair(currentFlowString, std::make_pair(flowCount,server_id) ));
+                        #if DEBUGBALANCER
+                            std::cout << "New flow found, added to server: " << k <<
+                                        std::endl << currentFlowString << std::endl << std::endl;
+                        #endif
+                        //TODO add flow to server k
+                        break;//this break makes it mutually exclusive (else if)
+                    }
+                }
+                //adding it to the logfile
+                std::string pktIndexString, flowCountString, server_idString; 
+                std::stringstream ss_;
+                ss_ << pktIndex;
+                ss_ >> pktIndexString;
+                ss_.clear();
+                ss_ << flowCount;
+                ss_ >> flowCountString;
+                ss_.clear();
+                ss_ << server_id;
+                ss_ >> server_idString;
+                //std::cout << "pkt = " << pktIndexString << " flow = " << flowCountString << " server = " << server_idString << std::endl;
+                printE(ofile, pktIndexString, pkt_idW);
+                printE(ofile, flowCountString, flow_idW);
+                printE(ofile, server_idString, server_idW);
+                ofile << std::endl;
+            }else{
+                //TODO: get flow server id and add it to the server
+
+                std::string pktIndexString, flowCountString, server_idString; 
+                std::stringstream ss_;
+                ss_ << pktIndex;
+                ss_ >> pktIndexString;
+                ss_.clear();
+                ss_ << it->second.first;
+                ss_ >> flowCountString;
+                ss_.clear();
+                ss_ << it->second.second;
+                ss_ >> server_idString;
+                //std::cout << "!!!!!!!!!!!pkt = " << pktIndexString << " flow = " << flowCountString << " server = " << server_idString << std::endl;
+
+                //adding it to the logfile
+                printE(ofile, pktIndexString, pkt_idW);
+                printE(ofile, flowCountString, flow_idW);
+                printE(ofile, server_idString, server_idW);
+                ofile << std::endl;
+
+            }
         }
-
-        //adding it to database/table
-        std::unordered_map<std::string, int >::iterator it;
-        it = db_packetCount.find(keyString);
-
-        int HeadersSum =  size_ip + ntohs(udp->uh_ulen) + ntohs(ip_->ip_len) - (size_ip + ntohs(udp->uh_ulen));// + payload;
-
-        if(it == db_packetCount.end()){//new element
-            db_packetCount.insert(make_pair(keyString, 1));
-            db_bytesCount.insert(make_pair(keyString, HeadersSum));
-        }else{
-            ++it->second;
-            it = db_bytesCount.find(keyString);
-            it->second += HeadersSum;
-        }
-
-        std::cout << "Packet #:  " << pktIndex << std::endl;
-        std::cout << "Protocol:  " << "UDP" << std::endl;
-        std::cout << "From:      " << inet_ntoa(ip_->ip_src) << std::endl;
-        std::cout << "To:        " << inet_ntoa(ip_->ip_dst) << std::endl;
-        std::cout << "Size:      " << HeadersSum << std:: endl << std::endl;
-
-    }else if(ip_->ip_p == IPPROTO_TCP){
+            
+            /*std::cout << "Packet #:  " << pktIndex << std::endl;
+            std::cout << "Protocol:  " << "UDP" << std::endl;
+            std::cout << "From:      " << inet_ntoa(ip_->ip_src) << std::endl;
+            std::cout << "To:        " << inet_ntoa(ip_->ip_dst) << std::endl;
+            std::cout << "Size:      " << HeadersSum << std:: endl << std::endl;*/      
+    }else if(ip_->ip_p == IPPROTO_TCP){//TCP protocol (I think is 6)
 
         tcp = (sniff_tcp *)(packet + SIZE_ETHERNET + size_ip);
         size_tcp = TH_OFF(tcp)*4;
@@ -265,59 +365,127 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet, int & pktIndex)
             //std::cerr << "Problem in funct get_packet, out in size_tcp. \n invalid size_tcp.";
             return;
         }
+
+        //increase packet count if it is valid
+        //I do it here because it's when the pkt is 100% valid to read
+        ++pktIndex;
+
         payload = (char *)(packet + SIZE_ETHERNET + size_ip + size_tcp);
 
+        if(sniffer){
+            std::string keyString;
+            if(s && d){
+                keyString = std::string(inet_ntoa(ip_->ip_src)) + SEPARATOR + std::string(inet_ntoa(ip_->ip_dst));
+            }else if(s){
+                keyString = inet_ntoa(ip_->ip_src);
+            }else{// !d
+                keyString = inet_ntoa(ip_->ip_dst);
+            }
 
-        std::string keyString;
-        if(s && d){
-            keyString = std::string(inet_ntoa(ip_->ip_src)) + SEPARATOR + std::string(inet_ntoa(ip_->ip_dst));
-        }else if(s){
-            keyString = inet_ntoa(ip_->ip_src);
-        }else{// !d
-            keyString = inet_ntoa(ip_->ip_dst);
+            //adding it to database/table
+            std::unordered_map<std::string, int >::iterator it;
+            it = db_packetCount.find(keyString);
+
+            int HeadersSum =  size_ip + size_tcp + ntohs(ip_->ip_len) - (size_ip + size_tcp);;// + payload;
+
+            if(it == db_packetCount.end()){//new element
+                db_packetCount.insert(make_pair(keyString, 1));
+                db_bytesCount.insert(make_pair(keyString, HeadersSum));
+            }else{
+                ++it->second;
+                it = db_bytesCount.find(keyString);
+                it->second += HeadersSum;
+            }
+        }else{//if balancer mode
+            std::cout << pktIndex << " ";
+            printf("TCP src_port=%d dst_port=%d\n",
+                //timestamp_string(ts),
+                ntohs(tcp->th_sport),
+                ntohs(tcp->th_dport));
+            std::string currentFlowString;
+            currentFlowString =  getFlowString(inet_ntoa(ip_->ip_src), inet_ntoa(ip_->ip_dst), 
+                                                (int)ntohs(tcp->th_sport), (int)ntohs(tcp->th_dport), "TCP"); 
+
+            //std::cout << currentFlowString << std::endl;
+
+            std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
+            if(it == db_flow_server.end()){
+                //TODO: add flow to random server number with nums[i] probability
+                flowCount += 1;
+                int randNum = (rand()%100) + 1;
+                int sum = 0;//used to calculate in which server this flow will go
+                int server_id = -1;
+                for(int k = 0; k < num; ++k){
+                    sum += nums[k];
+                    if(randNum <= sum){
+                        #if DEBUGPROBABILITY
+                            std::cout <<"sum = " << sum << " k = " << k << " rand = " << randNum << std::endl; 
+                        #endif
+                        //adding matching flow to server k.
+                        server_id = k + 1; 
+                        db_flow_server.insert(std::make_pair(currentFlowString, std::make_pair(flowCount,server_id) ));
+                        #if DEBUGBALANCER
+                            std::cout << "New flow found, added to server: " << k <<
+                                        std::endl << currentFlowString << std::endl << std::endl;
+                        #endif
+                        //TODO add flow to server k
+                        break;//this break makes it mutually exclusive (else if)
+                    }
+                }
+
+                //adding it to the logfile
+                std::string pktIndexString, flowCountString, server_idString; 
+                std::stringstream ss_;
+                ss_ << pktIndex;
+                ss_ >> pktIndexString;
+                ss_.clear();
+                ss_ << flowCount;
+                ss_ >> flowCountString;
+                ss_.clear();
+                ss_ << server_id;
+                ss_ >> server_idString;
+                //std::cout << "pkt = " << pktIndexString << " flow = " << flowCountString << " server = " << server_idString << std::endl;
+                printE(ofile, pktIndexString, pkt_idW);
+                printE(ofile, flowCountString, flow_idW);
+                printE(ofile, server_idString, server_idW);
+                ofile << std::endl;
+
+            }else{
+
+                //TODO: get flow server id and add it to the server
+                std::string pktIndexString, flowCountString, server_idString; 
+                std::stringstream ss_;
+                ss_ << pktIndex;
+                ss_ >> pktIndexString;
+                ss_.clear();
+                ss_ << it->second.first;
+                ss_ >> flowCountString;
+                ss_.clear();
+                ss_ << it->second.second;
+                ss_ >> server_idString;
+                //std::cout << "!!!!!!!!!!!pkt = " << pktIndexString << " flow = " << flowCountString << " server = " << server_idString << std::endl;
+
+                //adding it to the logfile
+                printE(ofile, pktIndexString, pkt_idW);
+                printE(ofile, flowCountString, flow_idW);
+                printE(ofile, server_idString, server_idW);
+                ofile << std::endl;
+            }
         }
 
-        //adding it to database/table
-        std::unordered_map<std::string, int >::iterator it;
-        it = db_packetCount.find(keyString);
-
-        int HeadersSum =  size_ip + size_tcp + ntohs(ip_->ip_len) - (size_ip + size_tcp);;// + payload;
-
-        if(it == db_packetCount.end()){//new element
-            db_packetCount.insert(make_pair(keyString, 1));
-            db_bytesCount.insert(make_pair(keyString, HeadersSum));
-        }else{
-            ++it->second;
-            it = db_bytesCount.find(keyString);
-            it->second += HeadersSum;
-        }
-
-        std::cout << "Packet #:  " << pktIndex << std::endl;
-        std::cout << "Protocol:  " << "TCP" << std::endl;
-        std::cout << "From:      " << inet_ntoa(ip_->ip_src) << std::endl;
-        std::cout << "To:        " << inet_ntoa(ip_->ip_dst) << std::endl;
-        std::cout << "Size:      " << HeadersSum << std:: endl << std::endl;
+        /*
+            std::cout << "Packet #:  " << pktIndex << std::endl;
+            std::cout << "Protocol:  " << "TCP" << std::endl;
+            std::cout << "From:      " << inet_ntoa(ip_->ip_src) << std::endl;
+            std::cout << "To:        " << inet_ntoa(ip_->ip_dst) << std::endl;
+            std::cout << "Size:      " << HeadersSum << std:: endl << std::endl;
+        */
 
     }else{
         std::cout << "Not a UDP ot TCP packet, returning" << std::endl;
         return;
     }
 
-}
-
-void printParsedResults(){
-    std::cout << "filename      =  " << filename << std::endl;
-    std::cout << "-r            =  " << r << std::endl;
-    std::cout << "interface     =  " << interface << std::endl;
-    std::cout << "-i            =  " << i << std::endl;
-    std::cout << "w             =  " << w << std::endl;
-    std::cout << "num           =  " << num << std::endl;
-    std::cout << "logfile       =  " << logfile << std::endl;
-    std::cout << "configpercent =  " << configpercent << std::endl;
-    std::cout << "p             =  " << p << std::endl;
-    std::cout << "b             =  " << b << std::endl;
-    std::cout << "s             =  " << s << std::endl;
-    std::cout << "d             =  " << d << std::endl;
 }
 
 void too_short(struct timeval ts, const char *truncated_hdr){
@@ -332,6 +500,23 @@ const char *timestamp_string(timeval ts){
         (int) ts.tv_sec, (int) ts.tv_usec);
 
     return timestamp_string_buf;
+}
+
+std::string getFlowString(std::string srcIP, std::string dstIP, int srcPort, int dstPort, std::string protocol){
+    std::string p1, p2;
+    std::stringstream ss;
+    ss << srcPort;
+    ss >> p1;
+    ss.clear();
+    ss << dstPort;
+    ss >> p2;
+    return std::string(srcIP + " " + dstIP + " " + p1 + " " + p2 + " " + protocol);
+}
+/*io manipulator function to print table in well formated order. Taken from:
+http://stackoverflow.com/questions/14765155/how-can-i-easily-format-my-data-table-in-c */
+template<typename T> void printE(std::ofstream & ofile_, T t, const int& width){
+    char fill = ' ';
+    ofile_ << std::left << std::setw(width) << std::setfill(fill) << t;
 }
 
 bool parseInput(int argv, char** argc){
@@ -433,6 +618,32 @@ bool parseInput(int argv, char** argc){
         return false;
     }
 
+    if(balancer){
+        //getting each percent
+        std::string currentPercent;
+        for(int j = 0; j < configpercent.size(); ++j){
+            if((configpercent[j] == ':') || (j+1 == configpercent.size())){
+                if(j+1 == configpercent.size()){
+                    currentPercent += configpercent[j];
+                }
+                nums.push_back(std::atoi(currentPercent.c_str()));
+                currentPercent = "";
+            }else{
+                currentPercent += configpercent[j];
+            }
+        }
+
+        //creating the "servers"
+        for(int k = 0; k < num; ++k){
+            std::string temp;//string version of k, for some reason itoa was not working
+            std::stringstream ss;
+            ss << (k+1);
+            ss >> temp;
+            std::string server_ = serverTemplate + temp;
+            servers.push_back(make_pair(server_, std::ofstream(server_)));
+        }
+    }
+
     #if DEBUGPARSE
         printParsedResults();
     #endif
@@ -440,84 +651,109 @@ bool parseInput(int argv, char** argc){
     return true;
 }
 
-/*io manipulator function to print table in well formated order. Taken from:
-http://stackoverflow.com/questions/14765155/how-can-i-easily-format-my-data-table-in-c */
-template<typename T> void printE(std::ofstream & ofile, T t, const int& width)
-{
-    char fill = ' ';
-    ofile << std::left << std::setw(width) << std::setfill(fill) << t;
+void printParsedResults(){
+    std::cout << "filename      =  " << filename << std::endl;
+    std::cout << "-r            =  " << r << std::endl;
+    std::cout << "interface     =  " << interface << std::endl;
+    std::cout << "-i            =  " << i << std::endl;
+    std::cout << "w             =  " << w << std::endl;
+    std::cout << "num           =  " << num << std::endl;
+    std::cout << "logfile       =  " << logfile << std::endl;
+    std::cout << "configpercent =  " << configpercent << std::endl;
+    std::cout << "p             =  " << p << std::endl;
+    std::cout << "b             =  " << b << std::endl;
+    std::cout << "s             =  " << s << std::endl;
+    std::cout << "d             =  " << d << std::endl;
+    for(int k = 0; k < nums.size(); ++k){
+        std::cout<<"nums["<<k<<"]     =  " << nums[k] <<std::endl;
+    }
+    for(int k = 0; k < servers.size(); ++k){
+        std::cout << "server["<<k<<"]    =  " << servers[k].first << std::endl;
+    }
 }
 
+
+
 void exit_signal(int signal){
-    std::ofstream ofile(logfile);
+    if(sniffer){
+        int sW, dW, pW, bW;
 
-    int sW, dW, pW, bW;
+        sW = dW = 18;
+        pW = 12;
+        bW = 12;
 
-    sW = dW = 18;
-    pW = 12;
-    bW = 12;
-
-    //writing out first rows
-    if(s){
-        printE(ofile, SRC, sW);
-    }
-    if(d){
-        printE(ofile, DST, dW);
-    }
-    if(p){
-        printE(ofile, PACKET, pW);
-    }
-    if(b){
-        printE(ofile, BYTES, bW);
-    }
-    ofile << std::endl;
-
-    //writing rest of the rows
-    std::unordered_map<std::string, int>::iterator it, it2;
-    for(it = db_packetCount.begin(); it != db_bytesCount.end(); ++it){
-        if(s && d){
-            std::string source, destination;
-            std::stringstream ss;
-            ss << it->first;
-            ss >> source >> destination;
-
-            #if DBO
-                std::cout << "if(s && d){...}" << std::endl;
-                std::cout << "it->first: " << it->first << std::endl;
-                std::cout << "Source: " << source << std::endl;
-                std::cout << "Destination: " << destination << std::endl;
-            #endif
-
-            //printing to database
-            printE(ofile, source, sW);
-            printE(ofile, destination, dW);
-
-        }else{
-            printE(ofile, it->first, dW);
+        //writing out first rows
+        if(s){
+            printE(ofile, SRC, sW);
         }
-
+        if(d){
+            printE(ofile, DST, dW);
+        }
         if(p){
-            printE(ofile, it->second, pW);
+            printE(ofile, PACKET, pW);
         }
         if(b){
-            it2 = db_bytesCount.find(it->first);
-            printE(ofile, it2->second, dW);
+            printE(ofile, BYTES, bW);
+        }
+        ofile << std::endl;
+
+        //writing rest of the rows
+        std::unordered_map<std::string, int>::iterator it, it2;
+        for(it = db_packetCount.begin(); it != db_bytesCount.end(); ++it){
+            if(s && d){
+                std::string source, destination;
+                std::stringstream ss;
+                ss << it->first;
+                ss >> source >> destination;
+
+                #if DBO
+                    std::cout << "if(s && d){...}" << std::endl;
+                    std::cout << "it->first: " << it->first << std::endl;
+                    std::cout << "Source: " << source << std::endl;
+                    std::cout << "Destination: " << destination << std::endl;
+                #endif
+
+                //printing to database
+                printE(ofile, source, sW);
+                printE(ofile, destination, dW);
+
+            }else{
+                printE(ofile, it->first, dW);
+            }
+
+            if(p){
+                printE(ofile, it->second, pW);
+            }
+            if(b){
+                it2 = db_bytesCount.find(it->first);
+                printE(ofile, it2->second, dW);
+            }
+
+            ofile << std::endl;
         }
 
-        ofile << std::endl;
+        ofile.close();
+    }else{//in case of balancer mode
+        //closing servers and logfile
+        for(int k = 0; k < servers.size(); ++k){
+            servers[k].second.close();
+        }
+        ofile.close();
     }
-
-    ofile.close();
-
-    std::cout << "Exited with signal: " << signal << std::endl;
 
     //closing sniffing in interface
     if(i){
         pcap_freecode(&fp);
-        pcap_close(handle);
     }
+    pcap_close(handle);
+
+    std::cout << "Exited with signal: " << signal << std::endl;
+
     exit(signal);
 }
+
+
+
 
 
 

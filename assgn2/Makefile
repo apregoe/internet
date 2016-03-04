@@ -9,5 +9,11 @@ debugparse:
 debugdbo:#DBO = data base outout
 	g++ $(CFLAGS) -DDBO balancer.cpp -o balancer
 
+debugbalancer:#DEBUGBALANCER
+	g++ $(CFLAGS) -DDEBUGBALANCER balancer.cpp -o balancer
+
+debugprobability:#DEBUGPROBABILITY
+	g++ $(CFLAGS) -DDEBUGPROBABILITY balancer.cpp -o balancer
+
 clean:
-	rm -rf balancer *.dSYM .DS_Store
+	rm -rf balancer *.dSYM .DS_Store logfile.txt sniff webserver.0 webserver.1 webserver.2 webserver.3 webserver.4 webserver.5

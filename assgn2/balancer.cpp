@@ -1,4 +1,12 @@
-#include "sniff.h"// taken from http://www.tcpdump.org/pcap.html
+/*
+REFERENCE:
+The general structure and Application Programming interface
+of this program were taken from taken from http://www.tcpdump.org/pcap.html
+and http://inst.eecs.berkeley.edu/~ee122/fa07/projects/p2files/packet_parser.c
+*/
+
+
+#include "sniff.h"//ip headers struct
 
 #include <iostream>
 #include <fstream>
@@ -78,19 +86,26 @@ const std::string DST    = "Destination";
 //storing structure
 std::unordered_map<std::string, std::pair<const int, const int> > db_flow_server;//each flow will be assing a server (randomly)
 int pktIndex = 0;//packet number that is being sniffed
-int flowCount = 0;//counter for flows
-std::vector<std::pair<std::string, std::ofstream> >servers;
+double flowCount = 0;//counter for flows
+std::vector<std::ofstream>servers;
 std::string serverTemplate = "webserver.";
-std::vector<int> nums;
+std::vector<std::pair<double, double> >nums;//current flow and max percentage
 //column width in server files and logfiles for balancer mode
 const int pkt_idW    = 12;
 const int flow_idW   = 12;
 const int server_idW = 12;
+const int timestampW = 25;
+const int dst_ipW    = 18;
+const int src_ipW    = 18;
+const int src_portW  = 12;
+const int dst_portW  = 12;
+const int protocolW  = 12;
+const int pkt_lenW   = 12;
+
 /**END DATABASE**/
 
 
 int main(int argv, char** argc) {
-
     //exit signal
     signal(SIGINT, exit_signal);
     srand(43);
@@ -114,6 +129,18 @@ int main(int argv, char** argc) {
         printE(ofile, "flow_id", flow_idW);
         printE(ofile, "server_id", server_idW);
         ofile << std::endl;
+
+        for(int k = 0; k < servers.size(); ++k){
+            printE(servers[k], "pkt_id", pkt_idW);
+            printE(servers[k], "timestamp", timestampW);
+            printE(servers[k], "src_ip", src_ipW);
+            printE(servers[k], "dst_ip", dst_ipW);
+            printE(servers[k], "src_port", src_portW);
+            printE(servers[k], "dst_port", dst_portW);
+            printE(servers[k], "protocol", protocolW);
+            printE(servers[k], "pkt_len", pkt_lenW);
+            servers[k] << std::endl;
+        }
     }
 
 
@@ -181,6 +208,14 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
     const char *payload; /* Packet payload */
     timeval ts = header->ts;/*timestamp*/
 
+    //UDP protocol variables
+    ip *ip_udp;
+    UDP_hdr *udp;
+    unsigned int IP_header_length;
+    int capture_len = header->caplen;
+
+    std::string currentFlowString;//It's the current flow (src + " " + dst + " " + PortS ...)
+
     u_int size_ip;
     u_int size_tcp;
 
@@ -201,11 +236,6 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
     }
 
     if (ip_->ip_p == IPPROTO_UDP){//UDP protocol (identifier == 17)
-
-        ip *ip_udp;
-        UDP_hdr *udp;
-        unsigned int IP_header_length;
-        int capture_len = header->caplen;
 
         /* For simplicity, we assume Ethernet encapsulation. */
 
@@ -249,6 +279,8 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
 
 
         udp = (UDP_hdr*) packet;
+        HeadersSum =  size_ip + ntohs(udp->uh_ulen) + ntohs(ip_->ip_len) - (size_ip + ntohs(udp->uh_ulen));// + payload;
+
 
         if(sniffer){//if sniffing device
             std::string keyString;
@@ -264,8 +296,6 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
             std::unordered_map<std::string, int >::iterator it;
             it = db_packetCount.find(keyString);
 
-            HeadersSum =  size_ip + ntohs(udp->uh_ulen) + ntohs(ip_->ip_len) - (size_ip + ntohs(udp->uh_ulen));// + payload;
-
             if(it == db_packetCount.end()){//new element
                 db_packetCount.insert(make_pair(keyString, 1));
                 db_bytesCount.insert(make_pair(keyString, HeadersSum));
@@ -275,13 +305,11 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
                 it->second += HeadersSum;
             }
         }else {// if balancer device
-            std::cout << pktIndex << " ";
-            printf("UDP src_port=%d dst_port=%d\n",
+            /*printf("UDP src_port=%d dst_port=%d\n",
                 //timestamp_string(ts),
                 ntohs(udp->uh_sport),
-                ntohs(udp->uh_dport));
+                ntohs(udp->uh_dport));*/
             
-            std::string currentFlowString;
             currentFlowString =  getFlowString(inet_ntoa(ip_->ip_src), inet_ntoa(ip_->ip_dst), 
                                                 (int)ntohs(udp->uh_sport), (int)ntohs(udp->uh_dport), "UDP"); 
 
@@ -290,18 +318,16 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
             std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
             if(it == db_flow_server.end()){
                 //TODO: add flow to random server number with nums[i] probability
-                flowCount += 1;
-                int randNum = (rand()%100) + 1;
-                int sum = 0;//used to calculate in which server this flow will go
                 int server_id = -1;
                 for(int k = 0; k < num; ++k){
-                    sum += nums[k];
-                    #if DEBUGPROBABILITY
-                    std::cout <<"sum = " << sum << " k = " << k << " rand = " << randNum << std::endl; 
-                    #endif
-                    if(randNum <= sum){
-                        //setting server id
-                        server_id = k + 1;
+                    //std::cout << "k = " << k << std::endl;
+                    double percent = ((flowCount == 0) ? 0.0 : nums[k].first/double(flowCount));
+                    if(percent*100 <= nums[k].second ){
+                        //std::cout << percent << " = " << nums[k].first << "/" << flowCount << std::endl;
+                        //std::cout << nums[k].second << std::endl << std::endl;
+                        ++flowCount;//increasing unique flows
+                        ++nums[k].first;//increasing # of unique flows in server
+                        server_id = k + 1;//setting server id
                         //adding matching flow to server k. 
                         db_flow_server.insert( std::make_pair(currentFlowString, std::make_pair(flowCount,server_id) ));
                         #if DEBUGBALANCER
@@ -352,11 +378,12 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
             }
         }
             
-            /*std::cout << "Packet #:  " << pktIndex << std::endl;
-            std::cout << "Protocol:  " << "UDP" << std::endl;
-            std::cout << "From:      " << inet_ntoa(ip_->ip_src) << std::endl;
-            std::cout << "To:        " << inet_ntoa(ip_->ip_dst) << std::endl;
-            std::cout << "Size:      " << HeadersSum << std:: endl << std::endl;*/      
+            std::cout << "Packet #: " << pktIndex;
+            std::cout << "     Protocol: " << "UDP";
+            std::cout << "     From: " << inet_ntoa(ip_->ip_src);
+            std::cout << "     To: " << inet_ntoa(ip_->ip_dst);
+            std::cout << "     Size: " << HeadersSum << std::endl;
+
     }else if(ip_->ip_p == IPPROTO_TCP){//TCP protocol (I think is 6)
 
         tcp = (sniff_tcp *)(packet + SIZE_ETHERNET + size_ip);
@@ -371,6 +398,7 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
         ++pktIndex;
 
         payload = (char *)(packet + SIZE_ETHERNET + size_ip + size_tcp);
+        HeadersSum =  size_ip + size_tcp + ntohs(ip_->ip_len) - (size_ip + size_tcp);// + payload;
 
         if(sniffer){
             std::string keyString;
@@ -386,8 +414,6 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
             std::unordered_map<std::string, int >::iterator it;
             it = db_packetCount.find(keyString);
 
-            int HeadersSum =  size_ip + size_tcp + ntohs(ip_->ip_len) - (size_ip + size_tcp);;// + payload;
-
             if(it == db_packetCount.end()){//new element
                 db_packetCount.insert(make_pair(keyString, 1));
                 db_bytesCount.insert(make_pair(keyString, HeadersSum));
@@ -397,12 +423,10 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
                 it->second += HeadersSum;
             }
         }else{//if balancer mode
-            std::cout << pktIndex << " ";
-            printf("TCP src_port=%d dst_port=%d\n",
+            /*printf("TCP src_port=%d dst_port=%d\n",
                 //timestamp_string(ts),
                 ntohs(tcp->th_sport),
-                ntohs(tcp->th_dport));
-            std::string currentFlowString;
+                ntohs(tcp->th_dport));*/
             currentFlowString =  getFlowString(inet_ntoa(ip_->ip_src), inet_ntoa(ip_->ip_dst), 
                                                 (int)ntohs(tcp->th_sport), (int)ntohs(tcp->th_dport), "TCP"); 
 
@@ -411,19 +435,18 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
             std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
             if(it == db_flow_server.end()){
                 //TODO: add flow to random server number with nums[i] probability
-                flowCount += 1;
-                int randNum = (rand()%100) + 1;
-                int sum = 0;//used to calculate in which server this flow will go
                 int server_id = -1;
                 for(int k = 0; k < num; ++k){
-                    sum += nums[k];
-                    if(randNum <= sum){
-                        #if DEBUGPROBABILITY
-                            std::cout <<"sum = " << sum << " k = " << k << " rand = " << randNum << std::endl; 
-                        #endif
-                        //adding matching flow to server k.
-                        server_id = k + 1; 
-                        db_flow_server.insert(std::make_pair(currentFlowString, std::make_pair(flowCount,server_id) ));
+                    //std::cout << "k = " << k << std::endl;
+                    double percent = ((flowCount == 0) ? 0.0 : nums[k].first/double(flowCount));
+                    if(percent*100 <= nums[k].second ){
+                        //std::cout << percent << " = " << nums[k].first << "/" << flowCount << std::endl;
+                        //std::cout << nums[k].second << std::endl << std::endl;
+                        ++flowCount;//increasing unique flows
+                        ++nums[k].first;//increasing # of unique flows in server
+                        server_id = k + 1;//setting server id
+                        //adding matching flow to server k. 
+                        db_flow_server.insert( std::make_pair(currentFlowString, std::make_pair(flowCount,server_id) ));
                         #if DEBUGBALANCER
                             std::cout << "New flow found, added to server: " << k <<
                                         std::endl << currentFlowString << std::endl << std::endl;
@@ -473,18 +496,34 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
             }
         }
 
-        /*
-            std::cout << "Packet #:  " << pktIndex << std::endl;
-            std::cout << "Protocol:  " << "TCP" << std::endl;
-            std::cout << "From:      " << inet_ntoa(ip_->ip_src) << std::endl;
-            std::cout << "To:        " << inet_ntoa(ip_->ip_dst) << std::endl;
-            std::cout << "Size:      " << HeadersSum << std:: endl << std::endl;
-        */
+        
+            std::cout << "Packet #: " << pktIndex;
+            std::cout << "     Protocol: " << "TCP";
+            std::cout << "     From: " << inet_ntoa(ip_->ip_src);
+            std::cout << "     To: " << inet_ntoa(ip_->ip_dst);
+            std::cout << "     Size: " << HeadersSum << std::endl;
+        
 
     }else{
-        std::cout << "Not a UDP ot TCP packet, returning" << std::endl;
+        std::cout << "Not a UDP or TCP packet, returning" << std::endl;
         return;
     }
+
+    std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
+    int server_position = it->second.second - 1;//-1 since it's saved as server id, not position
+    __uint16_t SPort = (ip_->ip_p == IPPROTO_UDP) ? ntohs(udp->uh_sport) : ntohs(tcp->th_sport);
+    __uint16_t DPort = (ip_->ip_p == IPPROTO_UDP) ? ntohs(udp->uh_dport) : ntohs(tcp->th_dport);
+    std::string Protocol = (ip_->ip_p == IPPROTO_UDP) ? "UDP" : "TCP";
+    printE(servers[server_position], pktIndex, pkt_idW);
+    printE(servers[server_position], timestamp_string(ts), timestampW);
+    printE(servers[server_position], inet_ntoa(ip_->ip_src), src_ipW);
+    printE(servers[server_position], inet_ntoa(ip_->ip_dst), dst_ipW);
+    printE(servers[server_position], SPort, src_portW);
+    printE(servers[server_position], DPort, dst_portW);
+    printE(servers[server_position], Protocol, protocolW);
+    printE(servers[server_position], HeadersSum, pkt_lenW);
+    servers[server_position] << std::endl;
+
 
 }
 
@@ -626,7 +665,7 @@ bool parseInput(int argv, char** argc){
                 if(j+1 == configpercent.size()){
                     currentPercent += configpercent[j];
                 }
-                nums.push_back(std::atoi(currentPercent.c_str()));
+                nums.push_back(std::make_pair(0.0 , std::atoi(currentPercent.c_str())));
                 currentPercent = "";
             }else{
                 currentPercent += configpercent[j];
@@ -640,7 +679,7 @@ bool parseInput(int argv, char** argc){
             ss << (k+1);
             ss >> temp;
             std::string server_ = serverTemplate + temp;
-            servers.push_back(make_pair(server_, std::ofstream(server_)));
+            servers.push_back(std::ofstream(server_));
         }
     }
 
@@ -665,10 +704,7 @@ void printParsedResults(){
     std::cout << "s             =  " << s << std::endl;
     std::cout << "d             =  " << d << std::endl;
     for(int k = 0; k < nums.size(); ++k){
-        std::cout<<"nums["<<k<<"]     =  " << nums[k] <<std::endl;
-    }
-    for(int k = 0; k < servers.size(); ++k){
-        std::cout << "server["<<k<<"]    =  " << servers[k].first << std::endl;
+        std::cout<<"nums["<<k<<"]     =  " << nums[k].second <<std::endl;
     }
 }
 
@@ -736,7 +772,7 @@ void exit_signal(int signal){
     }else{//in case of balancer mode
         //closing servers and logfile
         for(int k = 0; k < servers.size(); ++k){
-            servers[k].second.close();
+            servers[k].close();
         }
         ofile.close();
     }

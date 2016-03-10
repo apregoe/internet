@@ -1,4 +1,4 @@
-CFLAGS =	-g -std=c++0x -Wall -lpcap
+CFLAGS =	-std=c++14 -g -Wall -lpcap
 
 all:
 	g++ $(CFLAGS) balancer.cpp -o balancer

@@ -5,7 +5,6 @@
 #ifndef SNIFF_H
 #define SNIFF_H
 
-#include <iostream>
 #include <netinet/in.h>
 /* Ethernet addresses are 6 bytes */
 #define ETHER_ADDR_LEN	6

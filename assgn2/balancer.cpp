@@ -12,11 +12,13 @@ and http://inst.eecs.berkeley.edu/~ee122/fa07/projects/p2files/packet_parser.c
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <csignal>
+#include <cstring>
 
 #include <string>
 
 #include <vector>
-#include <unordered_map>
+#include <map>
 
 #include <pcap.h>
 
@@ -72,8 +74,8 @@ std::ofstream ofile;
 
 /**DATABASE**/
 //table part one
-std::unordered_map<std::string, int > db_bytesCount;
-std::unordered_map<std::string, int > db_packetCount;
+std::map<std::string, int > db_bytesCount;
+std::map<std::string, int > db_packetCount;
 std::string firstRow[4];
 //database constants
 const std::string PACKET = "Packets";
@@ -84,7 +86,7 @@ const std::string DST    = "Destination";
 
 //table part two
 //storing structure
-std::unordered_map<std::string, std::pair<const int, const int> > db_flow_server;//each flow will be assing a server (randomly)
+std::map<std::string, std::pair<const int, const int> > db_flow_server;//each flow will be assing a server (randomly)
 int pktIndex = 0;//packet number that is being sniffed
 double flowCount = 0;//counter for flows
 std::vector<std::ofstream>servers;
@@ -108,7 +110,6 @@ const int pkt_lenW   = 12;
 int main(int argv, char** argc) {
     //exit signal
     signal(SIGINT, exit_signal);
-    srand(43);
 
     //clearing default variables 
     r = i = w = p = b = c = s = d = false;
@@ -130,7 +131,7 @@ int main(int argv, char** argc) {
         printE(ofile, "server_id", server_idW);
         ofile << std::endl;
 
-        for(int k = 0; k < servers.size(); ++k){
+        for(unsigned int k = 0; k < servers.size(); ++k){
             printE(servers[k], "pkt_id", pkt_idW);
             printE(servers[k], "timestamp", timestampW);
             printE(servers[k], "src_ip", src_ipW);
@@ -154,25 +155,25 @@ int main(int argv, char** argc) {
 
         //getting network from mask and interface
         if(pcap_lookupnet(interface.c_str(), &net, &mask, errBuff) == -1){
-            std::cerr << "Problem in funct pcap_lookupnet: " << errBuff << std::endl << strerror(errno) << std::endl;
+            std::cerr << "Problem in funct pcap_lookupnet: " << errBuff << std::endl;
             return 1;
         }
 
         //opening pcap in which we will sniff
         if((handle = pcap_open_live(interface.c_str(), BUFSIZ, 1, 1000, errBuff)) == NULL){
-            std::cerr << "Problem in funct pcap_open_live: " << errBuff << std::endl << strerror(errno) << std::endl;
+            std::cerr << "Problem in funct pcap_open_live: " << errBuff << std::endl;
             return 1;
         }
 
         //verifying correct data link
         if(pcap_datalink(handle) != DLT_EN10MB){
-            std::cerr << "Problem in funct pcap_datalink: " << errBuff << std::endl << strerror(errno) << std::endl;
+            std::cerr << "Problem in funct pcap_datalink: " << errBuff << std::endl;
             return 1;
         }
 
         //compile version
         if(pcap_compile(handle, &fp, "ip", 0, net) == -1){
-            std::cerr << "Problem in funct pcap_compile: " << errBuff << std::endl << strerror(errno) << std::endl;
+            std::cerr << "Problem in funct pcap_compile: " << errBuff << std::endl;
             return 1;
         }
 
@@ -186,7 +187,7 @@ int main(int argv, char** argc) {
     }else{// r == true
         std::cout << "in offline" << std::endl;
         if((handle = pcap_open_offline(filename.c_str(), errBuff)) == NULL){
-            std::cerr << "Problem in funct pcap_open_offline: " << errBuff << std::endl << strerror(errno) << std::endl;
+            std::cerr << "Problem in funct pcap_open_offline: " << errBuff << std::endl;
             return 1;
         }
 
@@ -212,7 +213,7 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
     ip *ip_udp;
     UDP_hdr *udp;
     unsigned int IP_header_length;
-    int capture_len = header->caplen;
+    unsigned int capture_len = header->caplen;
 
     std::string currentFlowString;//It's the current flow (src + " " + dst + " " + PortS ...)
 
@@ -293,7 +294,7 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
             }
 
             //adding it to database/table
-            std::unordered_map<std::string, int >::iterator it;
+            std::map<std::string, int >::iterator it;
             it = db_packetCount.find(keyString);
 
             if(it == db_packetCount.end()){//new element
@@ -315,7 +316,7 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
 
             //std::cout << currentFlowString << std::endl;
 
-            std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
+            std::map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
             if(it == db_flow_server.end()){
                 //TODO: add flow to random server number with nums[i] probability
                 int server_id = -1;
@@ -411,7 +412,7 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
             }
 
             //adding it to database/table
-            std::unordered_map<std::string, int >::iterator it;
+            std::map<std::string, int >::iterator it;
             it = db_packetCount.find(keyString);
 
             if(it == db_packetCount.end()){//new element
@@ -432,7 +433,7 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
 
             //std::cout << currentFlowString << std::endl;
 
-            std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
+            std::map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
             if(it == db_flow_server.end()){
                 //TODO: add flow to random server number with nums[i] probability
                 int server_id = -1;
@@ -510,7 +511,7 @@ void got_packet(const pcap_pkthdr *header, const u_char *packet){
     }
 
     if(balancer){
-        std::unordered_map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
+        std::map<std::string, std::pair<const int, const int> >::iterator it = db_flow_server.find(currentFlowString);
         int server_position = it->second.second - 1;//-1 since it's saved as server id, not position
         __uint16_t SPort = (ip_->ip_p == IPPROTO_UDP) ? ntohs(udp->uh_sport) : ntohs(tcp->th_sport);
         __uint16_t DPort = (ip_->ip_p == IPPROTO_UDP) ? ntohs(udp->uh_dport) : ntohs(tcp->th_dport);
@@ -661,12 +662,18 @@ bool parseInput(int argv, char** argc){
     if(balancer){
         //getting each percent
         std::string currentPercent;
-        for(int j = 0; j < configpercent.size(); ++j){
+        for(unsigned int j = 0; j < configpercent.size(); ++j){
             if((configpercent[j] == ':') || (j+1 == configpercent.size())){
                 if(j+1 == configpercent.size()){
                     currentPercent += configpercent[j];
                 }
-                nums.push_back(std::make_pair(0.0 , std::atoi(currentPercent.c_str())));
+                std::stringstream ss;
+                ss.clear();
+                ss << currentPercent;
+                int percentInt;
+                ss >> percentInt;
+                ss.clear();
+                nums.push_back(std::make_pair(0.0 , percentInt));
                 currentPercent = "";
             }else{
                 currentPercent += configpercent[j];
@@ -704,7 +711,7 @@ void printParsedResults(){
     std::cout << "b             =  " << b << std::endl;
     std::cout << "s             =  " << s << std::endl;
     std::cout << "d             =  " << d << std::endl;
-    for(int k = 0; k < nums.size(); ++k){
+    for(unsigned int k = 0; k < nums.size(); ++k){
         std::cout<<"nums["<<k<<"]     =  " << nums[k].second <<std::endl;
     }
 }
@@ -735,7 +742,7 @@ void exit_signal(int signal){
         ofile << std::endl;
 
         //writing rest of the rows
-        std::unordered_map<std::string, int>::iterator it, it2;
+        std::map<std::string, int>::iterator it, it2;
         for(it = db_packetCount.begin(); it != db_bytesCount.end(); ++it){
             if(s && d){
                 std::string source, destination;
@@ -772,7 +779,7 @@ void exit_signal(int signal){
         ofile.close();
     }else{//in case of balancer mode
         //closing servers and logfile
-        for(int k = 0; k < servers.size(); ++k){
+        for(unsigned int k = 0; k < servers.size(); ++k){
             servers[k].close();
         }
         ofile.close();
@@ -786,7 +793,7 @@ void exit_signal(int signal){
 
     std::cout << "Exited with signal: " << signal << std::endl;
 
-    exit(signal);
+    std::exit(signal);
 }
 
 

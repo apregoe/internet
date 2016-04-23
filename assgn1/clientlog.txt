@@ -1,6 +1,0 @@
-conencting to the server 192.168.0.7 at port 2345
-connected to the server hostname 192.168.0.7
-Sending USCID 58944165389
-Sending Name Albert Prego
-received image and saved in l2.png
-terminating client...

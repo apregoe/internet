@@ -1,6 +1,0 @@
-server started on 192.168.0.7 at port 2345
-received client connection from hostname 192.168.0.7 port 2345
-received USCID 58944165389
-received Name Albert Prego
-sending image file l.png
-terminating server...
